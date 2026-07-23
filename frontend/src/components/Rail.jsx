@@ -1,10 +1,14 @@
+import Logo from './Logo';
 import { C, VIEWS } from '../theme';
 
 export default function Rail({ view, setView, onScan, connected, busy }) {
   return (
     <nav className="rail">
       <div className="brand">
-        <h1>mulenet.</h1>
+        <div className="brand-row">
+          <Logo size={32} />
+          <h1>mulenet.</h1>
+        </div>
         <p>laundering ring detection</p>
       </div>
 
