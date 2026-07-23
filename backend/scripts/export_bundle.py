@@ -18,20 +18,35 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mulenet import config, rule_engine, tools, viz  # noqa: E402
+from mulenet import config, engine, rule_engine, tools, viz  # noqa: E402
 
 DEFAULT_OUT = Path(__file__).resolve().parents[2] / "frontend" / "public" / "data" / "mulenet.json"
 
 
 def build(top_k: int = 25, split: str = config.DEFAULT_SPLIT) -> dict:
-    ring_ids = [r["ring_id"] for r in tools.scan_network(top_k=top_k, split=split)["rings"]]
+    scan = tools.scan_network(top_k=top_k, split=split)
+    ring_ids = [r["ring_id"] for r in scan["rings"]]
+
+    # The benchmark view needs both engines' numbers side by side. This block
+    # used to be assembled by the /tools/rule_engine endpoint, so exporting
+    # only evaluate() left the view with no `comparison` key and a blank panel.
+    rules = dict(rule_engine.evaluate(split))
+    rules["comparison"] = {
+        "rule_engine_flags": rules["total_flags"],
+        "rule_engine_caught": rules["laundering_caught"],
+        "rule_engine_missed": rules["laundering_missed"],
+        "graph_engine_rings": int(len(engine.load(split).rings)),
+        "graph_engine_top_rings": scan["rings_detected"],
+        "graph_engine_accounts_traced": scan["total_accounts_flagged"],
+    }
+
     return {
         "generated_from": split,
         "top_k": top_k,
-        "scan": tools.scan_network(top_k=top_k, split=split),
+        "scan": scan,
         "rings": viz.ring_cards(top_k=top_k, split=split),
         "graph": viz.graph_sample(top_k=top_k, split=split),
-        "rule_engine": rule_engine.evaluate(split),
+        "rule_engine": rules,
         "detail": {str(i): tools.investigate_ring(i, split=split) for i in ring_ids},
         "roles": {str(i): tools.classify_roles(i, split=split) for i in ring_ids},
     }

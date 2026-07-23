@@ -4,7 +4,18 @@ export default function Benchmark({ data }) {
   if (!data) return <div className="empty">Loading the comparison…</div>;
   if (data.error) return <div className="empty">{data.error}</div>;
 
+  // Reading straight into data.comparison threw and rendered a blank panel
+  // when the exported bundle omitted the block. Name the problem instead.
   const c = data.comparison;
+  if (!c) {
+    return (
+      <div className="empty">
+        Comparison data is missing from this build.
+        <br />
+        Regenerate it with <code>python scripts/export_bundle.py</code>.
+      </div>
+    );
+  }
   const perHit = Math.round(c.rule_engine_flags / Math.max(1, c.rule_engine_caught));
 
   return (
