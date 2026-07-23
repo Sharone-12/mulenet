@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mulenet import config, engine, rule_engine, tools, viz  # noqa: E402
+from mulenet import benchmark, config, engine, rule_engine, tools, viz  # noqa: E402
 
 DEFAULT_OUT = Path(__file__).resolve().parents[2] / "frontend" / "public" / "data" / "mulenet.json"
 
@@ -47,6 +47,8 @@ def build(top_k: int = 25, split: str = config.DEFAULT_SPLIT) -> dict:
         "rings": viz.ring_cards(top_k=top_k, split=split),
         "graph": viz.graph_sample(top_k=top_k, split=split),
         "rule_engine": rules,
+        # Both engines scored per transaction against the same labels.
+        "benchmark": benchmark.compare(split),
         "detail": {str(i): tools.investigate_ring(i, split=split) for i in ring_ids},
         "roles": {str(i): tools.classify_roles(i, split=split) for i in ring_ids},
     }
