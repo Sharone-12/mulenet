@@ -6,7 +6,8 @@ import Rail from './components/Rail';
 import RingInspector from './components/RingInspector';
 import RingQueue from './components/RingQueue';
 import StatCards from './components/StatCards';
-import { API, VIEWS, WS } from './theme';
+import { loadBundle, streamChat } from './api';
+import { VIEWS } from './theme';
 
 const GREETING =
   'I read a transaction graph of 6.9M transfers between 706K accounts. Ask me to scan it, ' +
@@ -22,7 +23,7 @@ const HEADINGS = {
 export default function App() {
   const [view, setView] = useState('network');
   const [messages, setMessages] = useState([{ role: 'agent', text: GREETING }]);
-  const [connected, setConnected] = useState(false);
+
   const [busy, setBusy] = useState(false);
 
   const [graph, setGraph] = useState(null);
@@ -34,12 +35,21 @@ export default function App() {
   const [activeRing, setActiveRing] = useState(null);
   const [stats, setStats] = useState({ accounts: 0, rings: 0, amount: 0, currency: '' });
 
-  const wsRef = useRef(null);
+  const bundleRef = useRef(null);
+  const messagesRef = useRef(messages);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
-    fetch(`${API}/graph/sample`).then((r) => r.json()).then(setGraph).catch(() => {});
-    fetch(`${API}/rings?top_k=25`).then((r) => r.json()).then((d) => Array.isArray(d) && setRings(d)).catch(() => {});
-    fetch(`${API}/tools/rule_engine`).then((r) => r.json()).then(setRuleData).catch(() => {});
+    loadBundle()
+      .then((b) => {
+        bundleRef.current = b;
+        setGraph(b.graph);
+        setRings(b.rings);
+        setRuleData(b.rule_engine);
+      })
+      .catch(() => {});
   }, []);
 
   // Visuals are driven by tool results, never by parsing the narration, so
@@ -67,54 +77,47 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    const socket = new WebSocket(WS);
-    wsRef.current = socket;
+  const send = useCallback(
+    async (text) => {
+      setMessages((p) => [...p, { role: 'user', text }]);
+      setBusy(true);
 
-    socket.onopen = () => setConnected(true);
-    socket.onclose = () => setConnected(false);
-    socket.onerror = () => setConnected(false);
+      // Only narration is replayed as history; tool payloads are re-fetched
+      // server-side, keeping each request small.
+      const history = messagesRef.current
+        .filter((m) => m.role === 'user' || m.role === 'agent')
+        .slice(-6)
+        .map((m) => ({ role: m.role === 'agent' ? 'assistant' : 'user', content: m.text }));
 
-    socket.onmessage = (event) => {
-      let e;
       try {
-        e = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-
-      if (e.type === 'tool_call') {
-        setMessages((p) => [...p, { role: 'tool', tool: e.tool, arguments: e.arguments }]);
-      } else if (e.type === 'tool_result') {
-        applyToolResult(e.tool, e.result);
-      } else if (e.type === 'token') {
-        setMessages((p) => {
-          const last = p[p.length - 1];
-          if (last?.role === 'agent' && last.streaming) {
-            const copy = [...p];
-            copy[copy.length - 1] = { ...last, text: last.text + e.text };
-            return copy;
+        for await (const e of streamChat(text, history)) {
+          if (e.type === 'tool_call') {
+            setMessages((p) => [...p, { role: 'tool', tool: e.tool, arguments: e.arguments }]);
+          } else if (e.type === 'tool_result') {
+            applyToolResult(e.tool, e.result);
+          } else if (e.type === 'token') {
+            setMessages((p) => {
+              const last = p[p.length - 1];
+              if (last?.role === 'agent' && last.streaming) {
+                const copy = [...p];
+                copy[copy.length - 1] = { ...last, text: last.text + e.text };
+                return copy;
+              }
+              return [...p, { role: 'agent', text: e.text, streaming: true }];
+            });
+          } else if (e.type === 'error') {
+            setMessages((p) => [...p, { role: 'agent', text: `Error: ${e.message}` }]);
           }
-          return [...p, { role: 'agent', text: e.text, streaming: true }];
-        });
-      } else if (e.type === 'done') {
+        }
+      } catch (err) {
+        setMessages((p) => [...p, { role: 'agent', text: `Error: ${err.message}` }]);
+      } finally {
         setBusy(false);
         setMessages((p) => p.map((m, i) => (i === p.length - 1 ? { ...m, streaming: false } : m)));
-      } else if (e.type === 'error') {
-        setBusy(false);
-        setMessages((p) => [...p, { role: 'agent', text: `Error: ${e.message}` }]);
       }
-    };
-
-    return () => socket.close();
-  }, [applyToolResult]);
-
-  const send = useCallback((text) => {
-    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-    setMessages((p) => [...p, { role: 'user', text }]);
-    setBusy(true);
-    wsRef.current.send(JSON.stringify({ message: text }));
-  }, []);
+    },
+    [applyToolResult]
+  );
 
   const openRing = useCallback(
     (ringId) => {
@@ -139,11 +142,11 @@ export default function App() {
         view={view}
         setView={setView}
         onScan={() => send('Scan the network for suspicious activity')}
-        connected={connected}
+        connected
         busy={busy}
       />
 
-      <ChatPanel messages={messages} connected={connected} busy={busy} onSend={send} />
+      <ChatPanel messages={messages} connected busy={busy} onSend={send} />
 
       <section className="panel work">
         <div className="panel-head">
