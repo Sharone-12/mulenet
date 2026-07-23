@@ -47,7 +47,9 @@ export default function App() {
         bundleRef.current = b;
         setGraph(b.graph);
         setRings(b.rings);
-        setRuleData(b.rule_engine);
+        // `benchmark` sits at the top level of the bundle but the view reads
+        // it alongside the rule-engine detail, so both travel together.
+        setRuleData({ ...b.rule_engine, benchmark: b.benchmark });
       })
       .catch(() => {});
   }, []);
