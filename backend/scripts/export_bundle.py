@@ -18,7 +18,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from mulenet import benchmark, config, engine, rule_engine, tools, viz  # noqa: E402
+import numpy as np  # noqa: E402
+
+from mulenet import (  # noqa: E402
+    benchmark,
+    config,
+    detectors,
+    engine,
+    graph as graph_mod,
+    loader,
+    ranker,
+    rings as rings_mod,
+    rule_engine,
+    scoring,
+    tools,
+    viz,
+)
 
 DEFAULT_OUT = Path(__file__).resolve().parents[2] / "frontend" / "public" / "data" / "mulenet.json"
 
@@ -42,6 +57,7 @@ def build(top_k: int = 25, split: str = config.DEFAULT_SPLIT) -> dict:
 
     return {
         "generated_from": split,
+        "ranking": learned_ranking(top_k, split),
         "top_k": top_k,
         "scan": scan,
         "rings": viz.ring_cards(top_k=top_k, split=split),
@@ -51,6 +67,55 @@ def build(top_k: int = 25, split: str = config.DEFAULT_SPLIT) -> dict:
         "benchmark": benchmark.compare(split),
         "detail": {str(i): tools.investigate_ring(i, split=split) for i in ring_ids},
         "roles": {str(i): tools.classify_roles(i, split=split) for i in ring_ids},
+    }
+
+
+def learned_ranking(top_k: int, split: str) -> dict:
+    """Re-rank the same candidates with the learned model.
+
+    Detection is not re-run or altered - these are the identical candidates the
+    heuristic ranks, ordered differently. Shipping both lets the queue be
+    reordered live and keeps the comparison honest.
+    """
+    labelled = loader.load_cache(split)
+    truth = scoring.ground_truth(labelled)
+    search = detectors.prefilter(labelled)
+    g = graph_mod.build_graph(search)
+
+    candidates = (
+        detectors.fan_out(search)
+        + detectors.fan_in(search)
+        + detectors.pass_through(search)
+        + detectors.velocity_burst(search)
+        + detectors.cycles(g, max_length=2)
+    )
+    candidates = [c for c in candidates if len(c.accounts) <= rings_mod.MAX_RING_ACCOUNTS]
+
+    account_ring = {}
+    for ring_id, accounts in truth.ring_accounts.items():
+        for a in accounts:
+            account_ring.setdefault(a, ring_id)
+    touched = np.array(
+        [next((account_ring[a] for a in c.accounts if a in account_ring), -1) for c in candidates]
+    )
+
+    scores, metrics = ranker.train_and_score(candidates, touched)
+
+    # Map back to the heuristic queue's ring ids so the UI can reorder without
+    # a second copy of every ring's data.
+    eng = engine.load(split)
+    by_accounts = {frozenset(c.accounts): float(s) for c, s in zip(candidates, scores)}
+    ranked = []
+    for _, row in eng.rings.head(top_k * 8).iterrows():
+        key = frozenset(json.loads(row["accounts"]))
+        if key in by_accounts:
+            ranked.append({"ring_id": int(row["ring_id"]), "score": round(by_accounts[key], 5)})
+    ranked.sort(key=lambda r: -r["score"])
+
+    return {
+        "learned_order": [r["ring_id"] for r in ranked[:top_k]],
+        "learned_scores": {str(r["ring_id"]): r["score"] for r in ranked[:top_k]},
+        "metrics": metrics,
     }
 
 
